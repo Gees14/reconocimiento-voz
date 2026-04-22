@@ -162,11 +162,63 @@ def codebook_distance_is(lpc_matrix, gains, codebook_lpc, codebook_gains):
 
 
 # ---------------------------------------------------------------------------
+# Get cluster assignments (for LPC codebook generation)
+# ---------------------------------------------------------------------------
+
+def get_cluster_assignments(training_vectors, codebook):
+    """Return array of cluster indices (nearest codevector for each training vector)."""
+    return np.array([_nearest_codevector(v, codebook) for v in training_vectors])
+
+
+def create_lpc_codebook(training_lsf, training_lpc, training_gains, lsf_codebook):
+    """
+    After training LSF codebook via LBG, compute corresponding LPC codebook.
+
+    For each LSF codevector, the LPC representation is the mean of all
+    training LPC vectors assigned to that cluster.
+
+    Parameters
+    ----------
+    training_lsf : np.ndarray  (N, order)
+    training_lpc : np.ndarray  (N, order)
+    training_gains : np.ndarray  (N,)
+    lsf_codebook : np.ndarray  (codebook_size, order)
+
+    Returns
+    -------
+    lpc_codebook : np.ndarray  (codebook_size, order)
+    gains_codebook : np.ndarray  (codebook_size,)
+    """
+    assignments = get_cluster_assignments(training_lsf, lsf_codebook)
+    codebook_size = len(lsf_codebook)
+    order = training_lpc.shape[1]
+
+    lpc_codebook = np.zeros((codebook_size, order))
+    gains_codebook = np.zeros(codebook_size)
+
+    for k in range(codebook_size):
+        members = assignments == k
+        if np.any(members):
+            lpc_codebook[k] = np.mean(training_lpc[members], axis=0)
+            gains_codebook[k] = np.mean(training_gains[members])
+        else:
+            # Dead cell: assign a random training vector
+            idx = np.random.randint(len(training_lpc))
+            lpc_codebook[k] = training_lpc[idx]
+            gains_codebook[k] = training_gains[idx]
+
+    return lpc_codebook, gains_codebook
+
+
+# ---------------------------------------------------------------------------
 # Save / load
 # ---------------------------------------------------------------------------
 
 def save_codebooks(codebooks, path="codebooks.pkl"):
-    """Save dict of {word: {size: codebook}} to disk."""
+    """
+    Save dict of codebooks.
+    Format: {size: {word: {'lsf': ..., 'lpc': ..., 'gains': ...}}}
+    """
     with open(path, "wb") as f:
         pickle.dump(codebooks, f)
     print(f"Codebooks saved to {path}")

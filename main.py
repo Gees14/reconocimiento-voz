@@ -11,7 +11,7 @@ from pathlib import Path
 
 from preprocessing import preprocess_file
 from features import extract_features
-from vq import lbg_train, save_codebooks, load_codebooks
+from vq import lbg_train, create_lpc_codebook, save_codebooks, load_codebooks
 from recognition import evaluate, plot_vad
 
 
@@ -49,11 +49,13 @@ def collect_files(data_dir, word, indices):
 def train_codebooks(data_dir, words, codebook_sizes,
                     train_indices=None, lpc_order=12):
     """
-    Build one LSF codebook per word per requested size.
+    Build one codebook per word per requested size.
+    Each codebook stores LSF (for training via LBG) and LPC+gains (for recognition via IS).
 
     Returns
     -------
-    codebooks_by_size : dict  {size: {word: np.ndarray (size, lpc_order)}}
+    codebooks_by_size : dict
+        {size: {word: {'lsf': lsf_cb, 'lpc': lpc_cb, 'gains': gains_cb}}}
     """
     if train_indices is None:
         train_indices = list(range(1, 11))  # files 1-10
@@ -64,23 +66,38 @@ def train_codebooks(data_dir, words, codebook_sizes,
     for word in words:
         print(f"\n  Word: {word}")
         all_lsf = []
+        all_lpc = []
+        all_gains = []
 
         for filepath in collect_files(data_dir, word, train_indices):
-            frames, _, _, raw, energies, zcrs = preprocess_file(str(filepath))
-            lsf_matrix, _, _ = extract_features(frames, lpc_order)
+            frames, _, _, raw, zcr, energy = preprocess_file(str(filepath))
+            lsf_matrix, lpc_matrix, gains = extract_features(frames, lpc_order)
             all_lsf.append(lsf_matrix)
+            all_lpc.append(lpc_matrix)
+            all_gains.append(gains)
 
         if not all_lsf:
             print(f"  [ERROR] No training files found for '{word}'. Skipping.")
             continue
 
         all_lsf = np.vstack(all_lsf)
+        all_lpc = np.vstack(all_lpc)
+        all_gains = np.concatenate(all_gains)
         print(f"  Training vectors: {all_lsf.shape}")
 
         for size in codebook_sizes:
             print(f"  Training codebook size={size} ...", end=" ", flush=True)
-            codebook = lbg_train(all_lsf, codebook_size=size)
-            codebooks_by_size[size][word] = codebook
+            # Train LSF codebook via LBG
+            lsf_codebook = lbg_train(all_lsf, codebook_size=size)
+            # Derive LPC codebook (for Itakura-Saito distance in recognition)
+            lpc_codebook, gains_codebook = create_lpc_codebook(
+                all_lsf, all_lpc, all_gains, lsf_codebook
+            )
+            codebooks_by_size[size][word] = {
+                'lsf': lsf_codebook,
+                'lpc': lpc_codebook,
+                'gains': gains_codebook,
+            }
             print("done")
 
     return codebooks_by_size
@@ -100,9 +117,9 @@ def visualize_vad_examples(data_dir, words, output_dir, n_examples=2):
         if not filepath:
             continue
         filepath = filepath[0]
-        _, start, end, raw, energies, zcrs = preprocess_file(str(filepath))
+        frames, start, end, raw, zcr, energy = preprocess_file(str(filepath))
         plot_vad(
-            raw, start, end, energies, zcrs,
+            raw, start, end, zcr, energy,
             title=f"VAD — {filepath.name}",
             save_path=output_dir / f"vad_{word}.png",
         )

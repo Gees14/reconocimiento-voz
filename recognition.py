@@ -9,18 +9,18 @@ from pathlib import Path
 
 from preprocessing import preprocess_file
 from features import extract_features
-from vq import codebook_distance_lsf
+from vq import codebook_distance_is
 
 
-def classify(lsf_matrix, codebooks, words):
+def classify(lpc_matrix, gains, codebooks, words):
     """
-    Classify a feature matrix by finding the word whose codebook gives
-    the minimum average distortion.
+    Classify a feature matrix using Itakura-Saito distance to LPC codebooks.
 
     Parameters
     ----------
-    lsf_matrix : np.ndarray  (n_frames, lpc_order)
-    codebooks : dict  {word: codebook_array}
+    lpc_matrix : np.ndarray  (n_frames, lpc_order)
+    gains : np.ndarray  (n_frames,)
+    codebooks : dict  {word: {'lsf': ..., 'lpc': ..., 'gains': ...}}
     words : list[str]
 
     Returns
@@ -31,7 +31,9 @@ def classify(lsf_matrix, codebooks, words):
     distances = {}
     for word in words:
         cb = codebooks[word]
-        distances[word] = codebook_distance_lsf(lsf_matrix, cb)
+        lpc_cb = cb['lpc']
+        gains_cb = cb['gains']
+        distances[word] = codebook_distance_is(lpc_matrix, gains, lpc_cb, gains_cb)
     predicted = min(distances, key=distances.get)
     return predicted, distances
 
@@ -40,12 +42,13 @@ def evaluate(data_dir, words, codebooks_by_size, codebook_sizes,
              test_indices=None, lpc_order=12, output_dir="output"):
     """
     Evaluate recognition accuracy on test files and plot confusion matrices.
+    Uses Itakura-Saito distance on LPC codebooks.
 
     Parameters
     ----------
     data_dir : str | Path
     words : list[str]
-    codebooks_by_size : dict  {size: {word: codebook}}
+    codebooks_by_size : dict  {size: {word: {'lsf': ..., 'lpc': ..., 'gains': ...}}}
     codebook_sizes : list[int]
     test_indices : list[int]  1-based file indices used for testing
     lpc_order : int
@@ -60,7 +63,7 @@ def evaluate(data_dir, words, codebooks_by_size, codebook_sizes,
 
     results = {size: {"true": [], "pred": []} for size in codebook_sizes}
 
-    print("\n--- Recognition phase ---")
+    print("\n--- Recognition phase (using Itakura-Saito distance) ---")
     for word in words:
         word_dir = data_dir / word
         for idx in test_indices:
@@ -74,11 +77,11 @@ def evaluate(data_dir, words, codebooks_by_size, codebook_sizes,
                 print(f"  [WARN] File not found for {word} index {idx}")
                 continue
 
-            frames, *_ = preprocess_file(str(filepath))
-            lsf_matrix, _, _ = extract_features(frames, lpc_order)
+            frames, _, _, _, _, _ = preprocess_file(str(filepath))
+            lsf_matrix, lpc_matrix, gains = extract_features(frames, lpc_order)
 
             for size in codebook_sizes:
-                predicted, _ = classify(lsf_matrix, codebooks_by_size[size], words)
+                predicted, _ = classify(lpc_matrix, gains, codebooks_by_size[size], words)
                 results[size]["true"].append(word)
                 results[size]["pred"].append(predicted)
                 print(f"  [{size:2d}cv] {filepath.name}: true={word:10s} pred={predicted}")
