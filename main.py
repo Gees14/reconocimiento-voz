@@ -146,8 +146,6 @@ def parse_args():
     p.add_argument("--codebook_file", default="codebooks.pkl")
     p.add_argument("--skip_training", action="store_true",
                    help="Load existing codebooks from --codebook_file")
-    p.add_argument("--vad_demo", action="store_true",
-                   help="Plot VAD detection for the first 2 words")
     return p.parse_args()
 
 
@@ -167,10 +165,9 @@ def main():
     print(f"Codebook sizes: {args.codebook_sizes}")
     print(f"Train indices: {args.train_files}  |  Test indices: {args.test_files}\n")
 
-    # Optional VAD visualization
-    if args.vad_demo:
-        print("Generating VAD demo plots...")
-        visualize_vad_examples(data_dir, words, output_dir)
+    # VAD visualization — always generated for all words
+    print("Generating VAD plots for all words...")
+    visualize_vad_examples(data_dir, words, output_dir, n_examples=len(words))
 
     # Training
     codebook_path = output_dir / args.codebook_file
@@ -185,8 +182,8 @@ def main():
         )
         save_codebooks(codebooks_by_size, str(codebook_path))
 
-    # Recognition + confusion matrices
-    evaluate(
+    # Recognition + confusion matrices + accuracy plots + top confusions
+    results, accuracies = evaluate(
         data_dir=data_dir,
         words=words,
         codebooks_by_size=codebooks_by_size,
@@ -195,6 +192,22 @@ def main():
         lpc_order=args.lpc_order,
         output_dir=output_dir,
     )
+
+    # Optimal codebook size recommendation
+    best_size = max(accuracies, key=accuracies.get)
+    print("\n" + "=" * 60)
+    print("RECOMENDACIÓN — Tamaño de codebook óptimo")
+    print("=" * 60)
+    for s in args.codebook_sizes:
+        marker = "  ←  ÓPTIMO" if s == best_size else ""
+        print(f"  Codebook {s:3d}: {accuracies[s]:.1%}{marker}")
+    print(f"\n  El codebook de tamaño {best_size} obtuvo la mayor precisión "
+          f"({accuracies[best_size]:.1%}).")
+    sizes_sorted = sorted(accuracies, key=accuracies.get, reverse=True)
+    if len(sizes_sorted) > 1 and accuracies[sizes_sorted[0]] == accuracies[sizes_sorted[1]]:
+        print("  Nota: varios tamaños tienen la misma precisión; "
+              "se prefiere el menor por mayor eficiencia.")
+    print("=" * 60)
 
 
 if __name__ == "__main__":

@@ -53,6 +53,11 @@ def evaluate(data_dir, words, codebooks_by_size, codebook_sizes,
     test_indices : list[int]  1-based file indices used for testing
     lpc_order : int
     output_dir : str | Path
+
+    Returns
+    -------
+    results : dict  {size: {'true': [...], 'pred': [...]}}
+    accuracies : dict  {size: float}
     """
     data_dir = Path(data_dir)
     output_dir = Path(output_dir)
@@ -67,7 +72,6 @@ def evaluate(data_dir, words, codebooks_by_size, codebook_sizes,
     for word in words:
         word_dir = data_dir / word
         for idx in test_indices:
-            # Try zero-padded filenames: word_01.wav, word_1.wav, etc.
             candidates = [
                 word_dir / f"{word}_{idx:02d}.wav",
                 word_dir / f"{word}_{idx}.wav",
@@ -86,20 +90,49 @@ def evaluate(data_dir, words, codebooks_by_size, codebook_sizes,
                 results[size]["pred"].append(predicted)
                 print(f"  [{size:2d}cv] {filepath.name}: true={word:10s} pred={predicted}")
 
+    accuracies = {}
+    confusions_by_size = {}
+    n = len(words)
+    word_to_idx = {w: i for i, w in enumerate(words)}
+
     for size in codebook_sizes:
         true_labels = results[size]["true"]
         pred_labels = results[size]["pred"]
+
+        # Build confusion matrix array for analysis
+        matrix = np.zeros((n, n), dtype=int)
+        for t, p in zip(true_labels, pred_labels):
+            if t in word_to_idx and p in word_to_idx:
+                matrix[word_to_idx[t]][word_to_idx[p]] += 1
+
         plot_confusion_matrix(true_labels, pred_labels, words,
-                               title=f"Confusion Matrix — Codebook size {size}",
+                               title=f"Matriz de Confusión — Codebook tamaño {size}",
                                save_path=output_dir / f"confusion_{size}.png")
+
         acc = accuracy(true_labels, pred_labels)
+        accuracies[size] = acc
         per_word_acc = per_word_accuracy(true_labels, pred_labels, words)
-        print(f"\n=== Codebook size {size} ===")
-        print(f"  Global accuracy: {acc:.1%}")
+        pairs = top_confusions(matrix, words, n=5)
+        confusions_by_size[size] = pairs
+
+        print(f"\n=== Codebook tamaño {size} ===")
+        print(f"  Precisión global: {acc:.1%}")
         for w, a in per_word_acc.items():
             print(f"  {w:12s}: {a:.1%}")
+        if pairs:
+            print(f"  Top confusiones:")
+            for count, true_w, pred_w in pairs:
+                print(f"    {true_w:10s} → {pred_w:10s}: {count} veces")
 
-    return results
+    # Summary plots
+    plot_accuracy_by_size(
+        codebook_sizes,
+        [accuracies[s] for s in codebook_sizes],
+        save_path=output_dir / "accuracy_by_size.png",
+    )
+    plot_top_confusions(confusions_by_size, save_path=output_dir / "top_confusions.png")
+
+    return results, accuracies
 
 
 # ---------------------------------------------------------------------------
@@ -121,6 +154,17 @@ def per_word_accuracy(true_labels, pred_labels, words):
         correct = sum(pred_labels[i] == word for i in indices)
         acc[word] = correct / len(indices)
     return acc
+
+
+def top_confusions(matrix, words, n=5):
+    """Return top N off-diagonal (true, predicted) pairs with most errors."""
+    pairs = []
+    for i in range(len(words)):
+        for j in range(len(words)):
+            if i != j and matrix[i, j] > 0:
+                pairs.append((matrix[i, j], words[i], words[j]))
+    pairs.sort(reverse=True)
+    return pairs[:n]
 
 
 # ---------------------------------------------------------------------------
@@ -158,6 +202,67 @@ def plot_confusion_matrix(true_labels, pred_labels, words,
                     color="white" if matrix[i, j] > thresh else "black",
                     fontsize=10)
 
+    plt.tight_layout()
+    if save_path:
+        plt.savefig(save_path, dpi=150)
+        print(f"  Saved: {save_path}")
+    plt.show()
+
+
+def plot_accuracy_by_size(sizes, accuracies, save_path=None):
+    """Bar chart comparing global accuracy across codebook sizes."""
+    fig, ax = plt.subplots(figsize=(7, 4))
+    colors = ["steelblue", "darkorange", "seagreen", "tomato", "mediumpurple"]
+    bars = ax.bar(
+        [str(s) for s in sizes],
+        [a * 100 for a in accuracies],
+        color=colors[:len(sizes)],
+        edgecolor="black",
+        width=0.5,
+    )
+    for bar, acc in zip(bars, accuracies):
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            bar.get_height() + 0.5,
+            f"{acc:.1%}",
+            ha="center", va="bottom", fontweight="bold", fontsize=11,
+        )
+    ax.set_ylim(0, 115)
+    ax.set_xlabel("Tamaño del codebook (número de codevectores)", fontsize=11)
+    ax.set_ylabel("Precisión global (%)", fontsize=11)
+    ax.set_title("Comparación de precisión por tamaño de codebook", fontsize=13)
+    ax.grid(axis="y", alpha=0.3)
+    plt.tight_layout()
+    if save_path:
+        plt.savefig(save_path, dpi=150)
+        print(f"  Saved: {save_path}")
+    plt.show()
+
+
+def plot_top_confusions(confusions_by_size, save_path=None):
+    """Horizontal bar chart of top confused word pairs aggregated across all codebook sizes."""
+    agg = {}
+    for size, pairs in confusions_by_size.items():
+        for count, true_w, pred_w in pairs:
+            key = f"{true_w} → {pred_w}"
+            agg[key] = agg.get(key, 0) + count
+
+    if not agg:
+        print("  No confusions recorded — all predictions correct.")
+        return
+
+    top = sorted(agg.items(), key=lambda x: x[1], reverse=True)[:10]
+    labels = [t[0] for t in top]
+    counts = [t[1] for t in top]
+
+    fig, ax = plt.subplots(figsize=(10, max(4, len(labels) * 0.55)))
+    bars = ax.barh(labels[::-1], counts[::-1], color="salmon", edgecolor="black")
+    for bar, cnt in zip(bars, counts[::-1]):
+        ax.text(bar.get_width() + 0.05, bar.get_y() + bar.get_height() / 2,
+                str(cnt), va="center", fontweight="bold")
+    ax.set_xlabel("Total de confusiones (suma de todos los codebooks)", fontsize=11)
+    ax.set_title("Top palabras que más se confunden entre sí", fontsize=13)
+    ax.grid(axis="x", alpha=0.3)
     plt.tight_layout()
     if save_path:
         plt.savefig(save_path, dpi=150)
